@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f4f1e8" />
+    <meta
+      name="description"
+      content="Gomoku Zero 五子棋分析台：合法动作遮罩、渐进式 MCTS 搜索与可追溯模型来源。"
+    />
+    <title>Gomoku Zero · 五子棋分析台</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script type="module" src="/static/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#board">跳到棋盘</a>
+
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Gomoku Zero 首页">
+        <svg aria-hidden="true" viewBox="0 0 32 32" class="brand-mark">
+          <path d="M5 5h22v22H5zM5 16h22M16 5v22" />
+          <circle cx="11" cy="11" r="3.4" />
+          <circle class="brand-mark-light" cx="21" cy="21" r="3.4" />
+        </svg>
+        <span>Gomoku Zero</span>
+      </a>
+      <div class="service-state" id="service-state" role="status" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="service-state-label">连接分析服务</span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="play-column" aria-labelledby="page-title">
+        <div class="intro">
+          <p class="eyebrow">15 × 15 · PUCT SEARCH</p>
+          <h1 id="page-title">让每一步推荐，<br />都能说清根据。</h1>
+          <p class="lede">
+            点击交替落子。服务器会先将已占用位置从合法动作集中排除，再逐级增加搜索预算。
+          </p>
+        </div>
+
+        <div class="board-section">
+          <div class="turn-strip">
+            <div>
+              <span class="micro-label">当前手方</span>
+              <strong id="turn-label">黑方落子</strong>
+            </div>
+            <div class="move-count"><span id="move-count">0</span><span>/ 225 手</span></div>
+          </div>
+
+          <div class="board-frame">
+            <div class="board-corner board-corner--top" aria-hidden="true">A — O</div>
+            <div class="board-stage">
+              <svg class="board-lines" viewBox="0 0 150 150" aria-hidden="true">
+                <g class="grid-lines">
+                  <path d="M5 5V145M15 5V145M25 5V145M35 5V145M45 5V145M55 5V145M65 5V145M75 5V145M85 5V145M95 5V145M105 5V145M115 5V145M125 5V145M135 5V145M145 5V145" />
+                  <path d="M5 5H145M5 15H145M5 25H145M5 35H145M5 45H145M5 55H145M5 65H145M5 75H145M5 85H145M5 95H145M5 105H145M5 115H145M5 125H145M5 135H145M5 145H145" />
+                </g>
+                <g class="star-points">
+                  <circle cx="35" cy="35" r="1.25" />
+                  <circle cx="115" cy="35" r="1.25" />
+                  <circle cx="75" cy="75" r="1.45" />
+                  <circle cx="35" cy="115" r="1.25" />
+                  <circle cx="115" cy="115" r="1.25" />
+                </g>
+              </svg>
+              <div
+                class="board-grid"
+                id="board"
+                role="grid"
+                aria-label="15 乘 15 五子棋棋盘"
+                aria-describedby="board-help"
+              ></div>
+            </div>
+            <p id="board-help" class="sr-only">
+              使用 Tab 键移动到空位，按回车或空格落子。已有棋子的位置不可选。
+            </p>
+          </div>
+
+          <div class="board-toolbar" aria-label="棋局操作">
+            <button class="quiet-button" id="undo-button" type="button" disabled>
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 7 4 12l5 5M5 12h8a6 6 0 1 1 0 12" /></svg>
+              悔棋
+            </button>
+            <button class="quiet-button" id="reset-button" type="button" disabled>
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.6M4 4v4.6h4.6" /></svg>
+              重置
+            </button>
+            <span class="toolbar-note" id="board-status" aria-live="polite">棋盘已就绪
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="analysis-column" aria-labelledby="analysis-title">
+        <div class="analysis-heading">
+          <div>
+            <p class="eyebrow">SERVER ANALYSIS</p>
+            <h2 id="analysis-title">局面分析</h2>
+          </div>
+          <span class="model-pill" id="model-pill">正在读取模型</span>
+        </div>
+
+        <div class="mode-fieldset">
+          <span class="micro-label" id="mode-label">搜索模式</span>
+          <div class="mode-switch" role="radiogroup" aria-labelledby="mode-label">
+            <button
+              type="button"
+              class="mode-option is-active"
+              id="mode-instant"
+              role="radio"
+              aria-checked="true"
+              data-mode="instant"
+            >
+              <span>即时</span>
+              <small>40 次</small>
+            </button>
+            <button
+              type="button"
+              class="mode-option"
+              id="mode-deep"
+              role="radio"
+              aria-checked="false"
+              data-mode="deep"
+            >
+              <span>深度</span>
+              <small>渐进至 6,000 次</small>
+            </button>
+          </div>
+        </div>
+
+        <button class="analyze-button" id="analyze-button" type="button">
+          <span id="analyze-button-label">开始分析</span>
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" /></svg>
+        </button>
+        <p class="inline-error" id="analysis-error" role="alert" hidden></p>
+
+        <section class="progress-section" id="progress-section" aria-labelledby="progress-title" hidden>
+          <div class="section-title-row">
+            <h3 id="progress-title">搜索进度</h3>
+            <span id="simulation-count" class="tabular">0 simulations</span>
+          </div>
+          <div
+            class="budget-rail"
+            id="budget-rail"
+            role="progressbar"
+            aria-label="MCTS 搜索进度"
+            aria-valuemin="0"
+            aria-valuenow="0"
+            aria-valuemax="40"
+          >
+            <span id="budget-progress"></span>
+          </div>
+          <div class="budget-stages" id="budget-stages" aria-hidden="true"></div>
+        </section>
+
+        <section class="result-section" aria-labelledby="outcome-title">
+          <div class="section-title-row">
+            <h3 id="outcome-title">结果估计</h3>
+            <span id="estimate-kind">等待分析</span>
+          </div>
+          <div class="outcome-empty" id="outcome-empty">
+            <svg aria-hidden="true" viewBox="0 0 48 48">
+              <path d="M8 38h32M12 32l8-10 7 6 9-14" />
+              <circle cx="36" cy="14" r="3" />
+            </svg>
+            <p>落子后启动分析，这里会显示黑胜、和棋与白胜估计。</p>
+          </div>
+          <div class="outcome-content" id="outcome-content" hidden>
+            <div class="outcome-row">
+              <span><i class="stone-dot stone-dot--black"></i>黑胜</span>
+              <strong id="black-outcome" class="tabular">—</strong>
+              <div class="outcome-track"><span id="black-bar"></span></div>
+            </div>
+            <div class="outcome-row">
+              <span><i class="stone-dot stone-dot--draw"></i>和棋</span>
+              <strong id="draw-outcome" class="tabular">—</strong>
+              <div class="outcome-track"><span id="draw-bar"></span></div>
+            </div>
+            <div class="outcome-row">
+              <span><i class="stone-dot stone-dot--white"></i>白胜</span>
+              <strong id="white-outcome" class="tabular">—</strong>
+              <div class="outcome-track"><span id="white-bar"></span></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="result-section candidates-section" aria-labelledby="candidates-title">
+          <div class="section-title-row">
+            <h3 id="candidates-title">候选落点</h3>
+            <span>Top 3 · 仅合法位置</span>
+          </div>
+          <ol class="candidate-list" id="candidate-list">
+            <li class="candidate-placeholder">
+              <span>01</span>
+              <p>还没有推荐。搜索越深，候选顺序越稳定。</p>
+            </li>
+          </ol>
+        </section>
+
+        <section class="provenance" aria-labelledby="provenance-title">
+          <button
+            class="provenance-toggle"
+            id="provenance-toggle"
+            type="button"
+            aria-expanded="false"
+            aria-controls="provenance-details"
+          >
+            <span>
+              <span class="micro-label" id="provenance-title">模型与检查点来源</span>
+              <strong id="model-id">读取中</strong>
+            </span>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m7 9 5 5 5-5" /></svg>
+          </button>
+          <div id="provenance-details" class="provenance-details" hidden>
+            <dl>
+              <div><dt>评估器</dt><dd id="evaluator-name">—</dd></div>
+              <div><dt>检查点</dt><dd id="checkpoint-name">—</dd></div>
+              <div><dt>SHA-256</dt><dd id="checkpoint-sha">—</dd></div>
+            </dl>
+            <p id="model-warning"></p>
+          </div>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="site-footer">
+      <p>搜索收敛只表示当前模型的判断趋于稳定，不等于已证明博弈论真值。</p>
+      <span id="position-hash">局面指纹：—</span>
+    </footer>
+  </body>
+</html>

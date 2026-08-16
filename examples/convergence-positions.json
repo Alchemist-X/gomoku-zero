@@ -1,0 +1,12 @@
+{
+  "positions": [
+    {
+      "id": "empty-board",
+      "moves": []
+    },
+    {
+      "id": "after-H8-I8",
+      "moves": ["H8", "I8"]
+    }
+  ]
+}

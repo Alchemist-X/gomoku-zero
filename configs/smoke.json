@@ -1,0 +1,28 @@
+{
+  "seed": 7,
+  "model": {
+    "channels": 32,
+    "residual_blocks": 2
+  },
+  "training": {
+    "iterations": 1,
+    "self_play_games_per_iteration": 2,
+    "mcts_simulations": 8,
+    "training_steps_per_iteration": 2,
+    "batch_size": 16,
+    "replay_buffer_size": 2048,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "checkpoint_every": 1
+  },
+  "evaluation": {
+    "games": 4,
+    "mcts_simulations": 8
+  },
+  "convergence": {
+    "budgets": [2, 4, 8],
+    "max_win_rate_delta": 0.01,
+    "require_same_top_move": true,
+    "require_same_top_three_set": true
+  }
+}
