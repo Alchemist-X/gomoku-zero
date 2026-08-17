@@ -650,11 +650,14 @@ def run_training(
     output_dir: str | os.PathLike[str],
     *,
     resume: str | os.PathLike[str] | None = None,
+    initialize_from: str | os.PathLike[str] | None = None,
     device: str | torch.device = "cpu",
     actors: int | None = None,
     promotion_hook: PromotionHook | None = None,
     skip_promotion: bool = False,
 ) -> Path:
+    if resume is not None and initialize_from is not None:
+        raise ValueError("resume and initialize_from are mutually exclusive")
     device_value = torch.device(device)
     seed_everything(config.seed)
     metric_path = Path(output_dir).expanduser().resolve() / "metrics.jsonl"
@@ -678,6 +681,15 @@ def run_training(
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
     replay = ReplayBuffer(config.training.replay_buffer_size, seed=config.seed)
     champion_state = _cpu_state_dict(model)
+    if initialize_from is not None:
+        initialized = GomokuNet.from_checkpoint(
+            initialize_from,
+            map_location=device_value,
+        ).to(device_value)
+        if initialized.model_config() != model.model_config():
+            raise ValueError("initial model architecture does not match requested config")
+        model.load_state_dict(initialized.state_dict(), strict=True)
+        champion_state = _cpu_state_dict(model)
     completed_iteration = 0
     global_step = 0
     if resume is not None:
@@ -845,6 +857,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", required=True, help="JSON run configuration")
     parser.add_argument("--output-dir", required=True, help="metrics/checkpoint directory")
     parser.add_argument("--resume", help="path to checkpoints/latest.pt")
+    parser.add_argument(
+        "--initialize-from",
+        help="model checkpoint used only to initialize weights for a new run",
+    )
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or cuda:N")
     parser.add_argument("--actors", type=int, help="override self-play actor processes")
     parser.add_argument("--skip-promotion", action="store_true")
@@ -913,6 +929,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         config,
         args.output_dir,
         resume=args.resume,
+        initialize_from=args.initialize_from,
         device=selected_device,
         actors=args.actors,
         skip_promotion=args.skip_promotion,

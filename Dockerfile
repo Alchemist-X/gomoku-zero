@@ -12,7 +12,7 @@ RUN python -m venv "${VIRTUAL_ENV}"
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 RUN python -m pip install --upgrade pip setuptools wheel \
-    && python -m pip install --index-url "${TORCH_INDEX_URL}" "torch>=2.6,<3"
+    && python -m pip install --index-url "${TORCH_INDEX_URL}" "torch==2.13.0"
 
 WORKDIR /build
 COPY pyproject.toml README.md LICENSE ./
