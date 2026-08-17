@@ -26,7 +26,9 @@
   },
   "deployment": {
     "public_url": "https://gomoku-zero-313049501255.asia-southeast1.run.app",
-    "cloud_run_revision": "gomoku-zero-00002-nqp",
+    "cloud_run_revision": "gomoku-zero-00003-v6j",
+    "serving_source_revision": "1aff963ac66893f057c30368f560e13cc74aa2c5",
+    "serving_image": "asia-southeast1-docker.pkg.dev/gomoku-zero-20260816-ai/gomoku/gomoku-zero@sha256:3b7cfe9645afcca357b86bc4566a25777de8a22fb55ab63ebd3dca0c056a1725",
     "deployed_checkpoint_sha256": "b82cb09cb163ef32986fe602ae3c2026a08b76e25ca3229534fc218c90b86137",
     "deployed_checkpoint_generation": "1786921835981242",
     "deployed_checkpoint_size_bytes": 64980229,

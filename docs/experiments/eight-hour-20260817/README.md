@@ -20,7 +20,7 @@ This directory is the immutable, repo-sized report for the completed Vertex AI r
 | Promotion uncertainty | 95% Wilson interval 34.2%–74.2% |
 | Checkpoints | 4 versioned states + `latest.pt` alias |
 | Final model | `model/model.pt`, 64,980,229 bytes |
-| Public deployment | `gomoku-zero-00002-nqp` |
+| Public deployment | `gomoku-zero-00003-v6j` |
 
 ![Training curves](figures/training-curves.png)
 
@@ -76,7 +76,7 @@ The raw-file SHA-256 values and every GCS object checksum used here are in [`sum
 
 ## Online deployment / 线上部署
 
-The promoted artifact is live at [gomoku-zero-313049501255.asia-southeast1.run.app](https://gomoku-zero-313049501255.asia-southeast1.run.app) on Cloud Run revision `gomoku-zero-00002-nqp`. The deployed object is generation `1786921835981242`, 64,980,229 bytes, SHA-256 `b82cb09cb163ef32986fe602ae3c2026a08b76e25ca3229534fc218c90b86137`.
+The promoted artifact is live at [gomoku-zero-313049501255.asia-southeast1.run.app](https://gomoku-zero-313049501255.asia-southeast1.run.app) on Cloud Run revision `gomoku-zero-00003-v6j`. The serving image was built from source commit `1aff963ac66893f057c30368f560e13cc74aa2c5` and pinned to digest `sha256:3b7cfe9645afcca357b86bc4566a25777de8a22fb55ab63ebd3dca0c056a1725`. The deployed model object is generation `1786921835981242`, 64,980,229 bytes, SHA-256 `b82cb09cb163ef32986fe602ae3c2026a08b76e25ca3229534fc218c90b86137`.
 
 As a serving smoke test, one empty-board request with the **instant 40-simulation** budget returned D5 and the model/search estimate black 55.75277%, draw 0.01781%, white 44.22942%. This verifies that the promoted checkpoint is answering requests. It is one low-budget model/search estimate—not an independent match set, a calibrated opening win rate, or a game-theoretic result.
 

@@ -29,7 +29,8 @@ checkpoint 的部署仍会明确标为 `bootstrap-untrained`。当前参考部�
 ## Public reference deployment / 线上参考部署
 
 - App / 在线应用：<https://gomoku-zero-313049501255.asia-southeast1.run.app>
-- Cloud Run revision: `gomoku-zero-00002-nqp`
+- Cloud Run revision: `gomoku-zero-00003-v6j`
+- Serving source: `1aff963ac66893f057c30368f560e13cc74aa2c5`
 - Model: training step `1000`, SHA-256
   `b82cb09cb163ef32986fe602ae3c2026a08b76e25ca3229534fc218c90b86137`
 
