@@ -22,7 +22,8 @@ RUN python -m pip install '.[cloud]'
 
 FROM python:3.11-slim-bookworm AS runtime
 
-ENV PATH="/opt/venv/bin:${PATH}" \
+ENV PATH="/opt/venv/bin:/usr/local/nvidia/bin:${PATH}" \
+    LD_LIBRARY_PATH="/usr/local/nvidia/lib:/usr/local/nvidia/lib64" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     NVIDIA_VISIBLE_DEVICES=all \
