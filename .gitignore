@@ -9,4 +9,5 @@ artifacts/
 checkpoints/
 data/
 dist/
-
+output/
+tmp/

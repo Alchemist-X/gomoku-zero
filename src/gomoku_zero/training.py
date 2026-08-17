@@ -19,15 +19,18 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
-from .config import RunConfig, load_config, seed_everything
+from .config import RunConfig, TrainingConfig, load_config, seed_everything
 from .model import CHECKPOINT_SCHEMA_VERSION, GomokuNet
 from .replay import ReplayBuffer, TrainingSample
-from .self_play import SelfPlayGame, derive_game_seeds, generate_self_play_games
+from .self_play import (
+    SelfPlayGame,
+    derive_game_seeds,
+    generate_self_play_games,
+    resolve_self_play_backend,
+)
 
 TRAINING_CHECKPOINT_VERSION = 1
-PromotionHook = Callable[
-    [torch.nn.Module, torch.nn.Module, int, int, int], Mapping[str, Any]
-]
+PromotionHook = Callable[[torch.nn.Module, torch.nn.Module, int, int, int], Mapping[str, Any]]
 
 
 def masked_log_softmax(
@@ -336,9 +339,7 @@ def write_self_play_manifest(
     """Write an immutable, per-iteration provenance shard for self-play games."""
 
     path = (
-        Path(output_dir).expanduser().resolve()
-        / "self-play"
-        / f"iteration-{iteration:04d}.jsonl"
+        Path(output_dir).expanduser().resolve() / "self-play" / f"iteration-{iteration:04d}.jsonl"
     )
     common = {
         "schema_version": 1,
@@ -527,6 +528,11 @@ def load_training_checkpoint(
     requested_training = asdict(expected_config.training)
     # Iteration count may be extended; all dynamics-affecting settings must match.
     saved_training = dict(saved_training)
+    # Schema v1 checkpoints predate batched self-play.  Missing fields mean the
+    # legacy process path and its inactive batching defaults.
+    compatibility_defaults = TrainingConfig()
+    for name in ("self_play_backend", "self_play_lanes", "inference_batch_size"):
+        saved_training.setdefault(name, getattr(compatibility_defaults, name))
     saved_training.pop("iterations", None)
     requested_training.pop("iterations", None)
     if saved_training != requested_training:
@@ -587,7 +593,7 @@ def append_metric(path: Path, metric: Mapping[str, Any]) -> None:
         os.fsync(handle.fileno())
 
 
-def estimate_training_work(config: RunConfig) -> dict[str, int]:
+def estimate_training_work(config: RunConfig) -> dict[str, int | str]:
     games = config.training.total_self_play_games
     promotion_gates = config.training.iterations // config.training.promotion_every
     promotion_games = promotion_gates * config.training.promotion_games
@@ -599,6 +605,9 @@ def estimate_training_work(config: RunConfig) -> dict[str, int]:
         "promotion_mcts_simulations_per_move": config.training.promotion_mcts_simulations,
         "total_games": games + promotion_games,
         "actors": config.training.self_play_actors,
+        "self_play_backend": config.training.self_play_backend,
+        "self_play_lanes": config.training.self_play_lanes,
+        "inference_batch_size": config.training.inference_batch_size,
         "mcts_simulations_per_move": config.training.mcts_simulations,
         "worst_case_leaf_evaluations": games * 225 * config.training.mcts_simulations,
         "promotion_worst_case_leaf_evaluations": promotion_games
@@ -695,6 +704,7 @@ def run_training(
         game_seeds = derive_game_seeds(
             config.seed, iteration, config.training.self_play_games_per_iteration
         )
+        self_play_stats: dict[str, Any] = {}
         games = generate_self_play_games(
             model,
             config.model,
@@ -702,6 +712,7 @@ def run_training(
             game_seeds,
             actors=actors,
             device=device_value,
+            stats=self_play_stats,
         )
         write_self_play_manifest(
             output_dir,
@@ -732,9 +743,7 @@ def run_training(
             gradient_clip_norm=config.training.gradient_clip_norm,
             mixed_precision=config.training.mixed_precision,
             scaler=scaler,
-            symmetry=(
-                "random" if config.training.symmetry_augmentation == "random" else "none"
-            ),
+            symmetry=("random" if config.training.symmetry_augmentation == "random" else "none"),
         )
         global_step += config.training.training_steps_per_iteration
 
@@ -785,6 +794,7 @@ def run_training(
             "learning_rate": optimizer.param_groups[0]["lr"],
             "seconds": time.monotonic() - started,
             "self_play_actors": actors or config.training.self_play_actors,
+            "self_play_inference": self_play_stats,
             "promotion": promotion,
             **training_metrics,
         }
@@ -841,7 +851,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-slow-production",
         action="store_true",
-        help="acknowledge that current MCTS evaluates leaves one at a time",
+        help="acknowledge the cost of any run with at least 1,000 self-play games",
+    )
+    parser.add_argument(
+        "--allow-batched-cpu",
+        action="store_true",
+        help="allow the GPU-oriented batched backend on CPU for benchmarks/tests",
     )
     parser.add_argument("--preflight-only", action="store_true")
     return parser
@@ -850,25 +865,55 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(args.config)
+    selected_device = _device(args.device)
     estimate = estimate_training_work(config)
     if args.actors is not None:
         if args.actors <= 0:
             raise SystemExit("--actors must be > 0")
         estimate["actors"] = args.actors
+    resolved_backend = resolve_self_play_backend(config.training, selected_device)
+    estimate["resolved_self_play_backend"] = resolved_backend
+    estimate["selected_device"] = str(selected_device)
+    estimate["batched_cpu_requires_override"] = (
+        resolved_backend == "batched" and selected_device.type != "cuda"
+    )
+    if resolved_backend == "batched":
+        estimate["maximum_effective_inference_batch"] = min(
+            config.training.self_play_lanes,
+            config.training.inference_batch_size,
+            config.training.self_play_games_per_iteration,
+        )
+    else:
+        estimate["maximum_effective_inference_batch"] = 1
     print(json.dumps({"event": "preflight", **estimate}, sort_keys=True), flush=True)
     if args.preflight_only:
         return 0
+    if (
+        resolved_backend == "batched"
+        and selected_device.type != "cuda"
+        and not args.allow_batched_cpu
+    ):
+        raise SystemExit(
+            "batched self-play is GPU-oriented and requires --device cuda; "
+            "pass --allow-batched-cpu only for an intentional CPU benchmark"
+        )
+    if resolved_backend == "batched" and args.actors is not None:
+        raise SystemExit(
+            "--actors applies only to the process backend; configure "
+            "training.self_play_lanes for batched self-play"
+        )
     is_large = estimate["self_play_games"] >= 1_000
     if is_large and not args.allow_slow_production:
         raise SystemExit(
-            "large run refused: current MCTS uses batch=1 leaf evaluation; "
-            "inspect the preflight estimate and pass --allow-slow-production to acknowledge it"
+            "large run refused: batching reduces inference calls but does not make the "
+            "workload cheap; inspect the estimate and pass --allow-slow-production "
+            "to acknowledge it"
         )
     latest = run_training(
         config,
         args.output_dir,
         resume=args.resume,
-        device=_device(args.device),
+        device=selected_device,
         actors=args.actors,
         skip_promotion=args.skip_promotion,
     )

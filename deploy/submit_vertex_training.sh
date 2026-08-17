@@ -49,7 +49,9 @@ CPU is the cost-conscious default. Optional accelerator overrides:
   TORCH_INDEX_URL=https://download.pytorch.org/whl/<compatible-cuda-index>
 
 When an accelerator is requested, TORCH_INDEX_URL must be explicitly set to a
-CUDA-compatible official PyTorch wheel index. Availability and quota are regional.
+CUDA-compatible official PyTorch wheel index. A config whose
+training.self_play_backend is "batched" is rejected before Cloud Build unless an
+accelerator is configured. Availability and quota are regional.
 EOF
 }
 
@@ -209,6 +211,23 @@ require_command python3
 CONFIG_ROOT="$(python3 -c 'from pathlib import Path; print(Path("configs").resolve())')"
 CONFIG_REAL="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$CONFIG_FILE")"
 [[ "$CONFIG_REAL" == "$CONFIG_ROOT"/* ]] || die "config symlink escapes the repository configs directory"
+CONFIG_SELF_PLAY_BACKEND="$(python3 - "$CONFIG_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    config = json.load(handle)
+print(config.get("training", {}).get("self_play_backend", "process"))
+PY
+)"
+[[ "$CONFIG_SELF_PLAY_BACKEND" == "process" || "$CONFIG_SELF_PLAY_BACKEND" == "batched" ]] || \
+  die "training.self_play_backend must be process or batched"
+if [[ "$CONFIG_SELF_PLAY_BACKEND" == "batched" && -z "$ACCELERATOR_TYPE" ]]; then
+  die "batched self-play requires an accelerator; set ACCELERATOR_TYPE, ACCELERATOR_COUNT, and a CUDA TORCH_INDEX_URL"
+fi
+if [[ "$CONFIG_SELF_PLAY_BACKEND" == "process" && -n "$ACCELERATOR_TYPE" ]]; then
+  printf 'warning: process self-play remains CPU/batch-one; the accelerator mainly helps optimizer and promotion work\n' >&2
+fi
 CONFIG_NAME="$(basename "$CONFIG_FILE" .json)"
 CONTAINER_CONFIG="/app/${CONFIG_FILE}"
 if [[ "$CONFIG_NAME" != "production" && "$JOB" == "$DEFAULT_JOB" ]]; then
@@ -227,6 +246,7 @@ printf '  job display name:    %s\n' "$JOB"
 printf '  source revision:     %s (%s)\n' "$SOURCE_REVISION" "$SOURCE_STATE"
 printf '  image:               %s\n' "$IMAGE_URI"
 printf '  config:              %s\n' "$CONTAINER_CONFIG"
+printf '  self-play backend:   %s\n' "$CONFIG_SELF_PLAY_BACKEND"
 printf '  worker:              1 x %s\n' "$MACHINE_TYPE"
 REQUESTED_VCPUS="${MACHINE_TYPE##*-}"
 if [[ "$REQUESTED_VCPUS" =~ ^[0-9]+$ ]]; then

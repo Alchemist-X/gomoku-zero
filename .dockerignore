@@ -12,6 +12,8 @@ __pycache__
 .mypy_cache
 .coverage
 htmlcov
+output
+tmp
 artifacts
 checkpoints
 data

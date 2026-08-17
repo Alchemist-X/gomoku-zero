@@ -15,10 +15,32 @@ self-play 训练、独立评估和可公开部署的分析 API。
 > `53.6% / 12.2% / 34.2%` 与 600 局 self-play 的 `368 / 55 / 177` 均为
 > **未经本仓库验证的 bootstrap 旧说法**，不能当作当前模型指标或五子棋的数学真值。
 
-No promoted weights, calibration report, or validated INT8 artifact is bundled. Public API
-deployments remain explicitly `bootstrap-untrained` until a trusted promoted checkpoint is
-configured. / 仓库不附带已晋级权重、校准报告或经过验证的 INT8 产物；公开 API 在明确
-配置可信的晋级 checkpoint 前会保持 `bootstrap-untrained` 标识。
+No model weights, calibration report, or validated INT8 artifact is bundled in Git. Deployments
+remain explicitly `bootstrap-untrained` until a trusted checkpoint is configured. The reference
+deployment currently loads the promoted checkpoint from the bounded 2026-08-17 run; its exact
+metrics, provenance, plots, and limitations are recorded in
+[the experiment report](docs/experiments/eight-hour-20260817/README.md).
+
+仓库不会把模型权重、校准报告或未经验证的 INT8 产物直接提交到 Git；未配置可信
+checkpoint 的部署仍会明确标为 `bootstrap-untrained`。当前参考部署已加载 2026-08-17
+受限训练中晋级的 checkpoint，完整指标、来源、图表与限制见
+[实验报告](docs/experiments/eight-hour-20260817/README.md)。
+
+## Public reference deployment / 线上参考部署
+
+- App / 在线应用：<https://gomoku-zero-313049501255.asia-southeast1.run.app>
+- Cloud Run revision: `gomoku-zero-00002-nqp`
+- Model: training step `1000`, SHA-256
+  `b82cb09cb163ef32986fe602ae3c2026a08b76e25ca3229534fc218c90b86137`
+
+This checkpoint came from a **5 h 50 min bounded experiment**: four iterations, 192 self-play
+games, 9,371 replay samples, and a 20-game promotion gate. It is a working trained artifact, not
+the planned 20,000-game production run or 6,000-game independent evaluation. Its displayed W/D/L
+values are model-and-search estimates, not the mathematical truth of Gomoku.
+
+该 checkpoint 来自一次 **5 小时 50 分的时间盒实验**：4 个训练迭代、192 局 self-play、
+9,371 个 replay 样本和 20 局晋级赛。它是可运行的训练产物，但不是计划中的 20,000 局
+正式训练，也未完成 6,000 局独立评估；页面中的胜/和/负仅代表该模型与搜索预算的估计。
 
 ## Quick start / 快速开始
 
@@ -146,9 +168,20 @@ Training writes checkpoints below the chosen run directory. Resume with
 object storage, test resume with the smoke profile, and never overwrite the last known good
 checkpoint. See [Training](docs/TRAINING.md) and [Model card](docs/MODEL_CARD.md).
 
+The GPU-oriented Phase 1 profile at `configs/gpu-batched.json` replaces per-leaf
+`[1, 3, 15, 15]` forwards with real cross-game batches. Its topology, telemetry,
+submission guardrails, and remaining single-process PUCT limitation are documented in
+[Self-play scaling](docs/SCALING.md). The historical `configs/eight-hour.json` remains unchanged
+as exact run provenance.
+
 训练会把 checkpoint 写入指定运行目录。正式训练前应把 checkpoint 与运行元数据同步到
 持久对象存储，用 smoke 配置验证断点恢复，并保留最后一个已知可用版本。详见
 [训练说明](docs/TRAINING.md)和[模型卡](docs/MODEL_CARD.md)。
+
+面向 GPU 的 `configs/gpu-batched.json` 会把逐叶 `[1, 3, 15, 15]` 前向改为真实的跨对局
+批量推理；拓扑、遥测、提交保护和当前单进程 PUCT 的限制见
+[自博弈扩展说明](docs/SCALING.md)。历史 `configs/eight-hour.json` 保持不变，作为本次实验
+可复现来源。
 
 ## Deploy publicly on Google Cloud / 公开部署到 Google Cloud
 
