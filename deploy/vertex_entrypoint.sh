@@ -13,6 +13,15 @@ TRAIN_DEVICE="${TRAIN_DEVICE:-cpu}"
 SYNC_INTERVAL_SECONDS="${SYNC_INTERVAL_SECONDS:-300}"
 RESUME_CHECKPOINT_URI="${RESUME_CHECKPOINT_URI:-}"
 ALLOW_SLOW_PRODUCTION="${ALLOW_SLOW_PRODUCTION:-0}"
+INITIAL_MODEL_URI="${INITIAL_MODEL_URI:-}"
+INITIAL_MODEL_SHA256="${INITIAL_MODEL_SHA256:-}"
+RUN_TOURNAMENT="${RUN_TOURNAMENT:-0}"
+TOURNAMENT_GAMES_PER_PAIR="${TOURNAMENT_GAMES_PER_PAIR:-8}"
+TOURNAMENT_SIMULATIONS="${TOURNAMENT_SIMULATIONS:-128}"
+TOURNAMENT_OPENING_PLIES="${TOURNAMENT_OPENING_PLIES:-4}"
+TOURNAMENT_SEED="${TOURNAMENT_SEED:-20260817}"
+TOURNAMENT_MAX_BATCH_SIZE="${TOURNAMENT_MAX_BATCH_SIZE:-32}"
+TOURNAMENT_BOOTSTRAP_SAMPLES="${TOURNAMENT_BOOTSTRAP_SAMPLES:-1000}"
 
 if [[ -z "$GCS_OUTPUT_URI" && -n "${AIP_MODEL_DIR:-}" ]]; then
   GCS_OUTPUT_URI="${AIP_MODEL_DIR%/}"
@@ -26,9 +35,73 @@ fi
 [[ "$ALLOW_SLOW_PRODUCTION" == "1" ]] || die "production training requires ALLOW_SLOW_PRODUCTION=1 from the confirmed submitter"
 [[ "$SYNC_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] && ((SYNC_INTERVAL_SECONDS >= 30)) || die "SYNC_INTERVAL_SECONDS must be at least 30"
 [[ -z "$RESUME_CHECKPOINT_URI" || "$RESUME_CHECKPOINT_URI" =~ ^gs://[^/]+/.+ ]] || die "RESUME_CHECKPOINT_URI must be gs://BUCKET/OBJECT"
+[[ -z "$INITIAL_MODEL_URI" || "$INITIAL_MODEL_URI" =~ ^gs://[^/]+/.+ ]] || die "INITIAL_MODEL_URI must be gs://BUCKET/OBJECT[#GENERATION]"
+[[ -z "$INITIAL_MODEL_SHA256" || "$INITIAL_MODEL_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "INITIAL_MODEL_SHA256 must be lowercase SHA-256"
+[[ "$RUN_TOURNAMENT" == "0" || "$RUN_TOURNAMENT" == "1" ]] || die "RUN_TOURNAMENT must be 0 or 1"
+for value in "$TOURNAMENT_GAMES_PER_PAIR" "$TOURNAMENT_SIMULATIONS" \
+  "$TOURNAMENT_OPENING_PLIES" "$TOURNAMENT_SEED" "$TOURNAMENT_MAX_BATCH_SIZE" \
+  "$TOURNAMENT_BOOTSTRAP_SAMPLES"; do
+  [[ "$value" =~ ^[0-9]+$ ]] || die "tournament settings must be non-negative integers"
+done
+
+python - <<'PY'
+import json
+
+import torch
+
+diagnostics = {
+    "torch_version": torch.__version__,
+    "torch_cuda_version": torch.version.cuda,
+    "cuda_available": torch.cuda.is_available(),
+    "cuda_device_count": torch.cuda.device_count(),
+}
+if diagnostics["cuda_available"]:
+    diagnostics["cuda_device_name"] = torch.cuda.get_device_name(0)
+    diagnostics["cuda_device_memory_bytes"] = torch.cuda.get_device_properties(0).total_memory
+print("Runtime diagnostics: " + json.dumps(diagnostics, sort_keys=True), flush=True)
+PY
+((TOURNAMENT_GAMES_PER_PAIR > 0 && TOURNAMENT_GAMES_PER_PAIR % 2 == 0)) || die "TOURNAMENT_GAMES_PER_PAIR must be positive and even"
+((TOURNAMENT_SIMULATIONS > 0 && TOURNAMENT_MAX_BATCH_SIZE > 0)) || die "tournament simulations and batch size must be positive"
 
 mkdir -p "$LOCAL_OUTPUT_DIR"
 cp "$TRAIN_CONFIG" "$LOCAL_OUTPUT_DIR/config.production.json"
+
+INITIAL_MODEL_PATH=""
+if [[ -n "$INITIAL_MODEL_URI" ]]; then
+  FROZEN_DIR="${LOCAL_OUTPUT_DIR}/frozen"
+  mkdir -p "$FROZEN_DIR"
+  INITIAL_MODEL_PATH="${FROZEN_DIR}/v0000-base.pt"
+  python - "$INITIAL_MODEL_URI" "$INITIAL_MODEL_PATH" "$INITIAL_MODEL_SHA256" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+from google.cloud import storage
+
+uri, destination, expected_digest = sys.argv[1:]
+object_uri, marker, generation_text = uri.partition("#")
+if marker and (not generation_text.isdigit() or int(generation_text) <= 0):
+    raise SystemExit("INITIAL_MODEL_URI generation must be a positive integer")
+bucket_name, separator, object_name = object_uri[5:].partition("/")
+if not separator or not object_name:
+    raise SystemExit(f"invalid initial model URI: {uri}")
+client = storage.Client()
+generation = int(generation_text) if marker else None
+blob = client.bucket(bucket_name).blob(object_name, generation=generation)
+target = pathlib.Path(destination)
+blob.download_to_filename(
+    str(target),
+    checksum="auto",
+    if_generation_match=generation,
+)
+digest = hashlib.sha256(target.read_bytes()).hexdigest()
+if expected_digest and digest != expected_digest:
+    raise SystemExit(
+        f"initial model SHA-256 mismatch: expected {expected_digest}, got {digest}"
+    )
+print(f"Downloaded frozen initial model {uri} ({digest})", flush=True)
+PY
+fi
 
 RESUME_DIR="${LOCAL_OUTPUT_DIR}/checkpoints"
 mkdir -p "$RESUME_DIR"
@@ -213,6 +286,8 @@ TRAIN_COMMAND=(
 )
 if [[ -n "$RESUME_PATH" && -f "$RESUME_PATH" ]]; then
   TRAIN_COMMAND+=(--resume "$RESUME_PATH")
+elif [[ -n "$INITIAL_MODEL_PATH" && -f "$INITIAL_MODEL_PATH" ]]; then
+  TRAIN_COMMAND+=(--initialize-from "$INITIAL_MODEL_PATH")
 fi
 
 TRAIN_PID=""
@@ -237,6 +312,40 @@ if ((RECEIVED_SIGNAL)) && ((TRAIN_STATUS == 0)); then
   TRAIN_STATUS=143
 fi
 
+TOURNAMENT_STATUS=0
+if ((TRAIN_STATUS == 0)) && [[ "$RUN_TOURNAMENT" == "1" ]]; then
+  TOURNAMENT_COMMAND=(
+    python -m gomoku_zero.tournament
+    --output-dir "${LOCAL_OUTPUT_DIR}/tournament"
+    --games-per-pair "$TOURNAMENT_GAMES_PER_PAIR"
+    --simulations "$TOURNAMENT_SIMULATIONS"
+    --opening-plies "$TOURNAMENT_OPENING_PLIES"
+    --seed "$TOURNAMENT_SEED"
+    --device "$TRAIN_DEVICE"
+    --max-batch-size "$TOURNAMENT_MAX_BATCH_SIZE"
+    --bootstrap-samples "$TOURNAMENT_BOOTSTRAP_SAMPLES"
+  )
+  if [[ -n "$INITIAL_MODEL_PATH" && -f "$INITIAL_MODEL_PATH" ]]; then
+    TOURNAMENT_COMMAND+=(--model "v0000-base=${INITIAL_MODEL_PATH}" --anchor v0000-base)
+  fi
+  for checkpoint in "${LOCAL_OUTPUT_DIR}"/checkpoints/iteration-*.pt; do
+    [[ -f "$checkpoint" ]] || continue
+    stem="$(basename "$checkpoint" .pt)"
+    iteration="${stem#iteration-}"
+    TOURNAMENT_COMMAND+=(--model "v${iteration}=${checkpoint}")
+  done
+  printf 'Starting fixed-checkpoint round-robin tournament.\n'
+  set +e
+  "${TOURNAMENT_COMMAND[@]}" &
+  TRAIN_PID=$!
+  wait "$TRAIN_PID"
+  TOURNAMENT_STATUS=$?
+  set -e
+  if ((RECEIVED_SIGNAL)) && ((TOURNAMENT_STATUS == 0)); then
+    TOURNAMENT_STATUS=143
+  fi
+fi
+
 touch "$UPLOAD_DONE_FILE"
 set +e
 wait "$UPLOADER_PID"
@@ -247,9 +356,13 @@ if ((TRAIN_STATUS != 0)); then
   printf 'Training exited with status %s; partial checkpoints were synced.\n' "$TRAIN_STATUS" >&2
   exit "$TRAIN_STATUS"
 fi
+if ((TOURNAMENT_STATUS != 0)); then
+  printf 'Tournament exited with status %s; completed games were synced.\n' "$TOURNAMENT_STATUS" >&2
+  exit "$TOURNAMENT_STATUS"
+fi
 if ((UPLOAD_STATUS != 0)); then
   printf 'Training completed, but final GCS sync exited with status %s.\n' "$UPLOAD_STATUS" >&2
   exit "$UPLOAD_STATUS"
 fi
 
-printf 'Production training and GCS publication completed successfully.\n'
+printf 'Production training, optional tournament, and GCS publication completed successfully.\n'

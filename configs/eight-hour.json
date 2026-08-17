@@ -1,0 +1,49 @@
+{
+  "seed": 20260817,
+  "model": {
+    "channels": 128,
+    "residual_blocks": 10
+  },
+  "training": {
+    "iterations": 4,
+    "self_play_games_per_iteration": 48,
+    "self_play_actors": 28,
+    "mcts_simulations": 800,
+    "c_puct": 1.5,
+    "dirichlet_alpha": 0.15,
+    "dirichlet_fraction": 0.25,
+    "temperature_moves": 16,
+    "training_steps_per_iteration": 250,
+    "batch_size": 256,
+    "replay_buffer_size": 200000,
+    "learning_rate": 0.001,
+    "learning_rate_milestones": [3],
+    "learning_rate_gamma": 0.2,
+    "weight_decay": 0.0001,
+    "gradient_clip_norm": 5.0,
+    "mixed_precision": true,
+    "checkpoint_every": 1,
+    "promotion_games": 20,
+    "promotion_every": 4,
+    "promotion_mcts_simulations": 200,
+    "promotion_threshold": 0.55,
+    "symmetry_augmentation": "random"
+  },
+  "evaluation": {
+    "games": 200,
+    "mcts_simulations": 400,
+    "opening_plies": 4,
+    "paired_openings": true,
+    "confidence_level": 0.95
+  },
+  "convergence": {
+    "budgets": [128, 512, 2048, 6000, 12000],
+    "max_win_rate_delta": 0.01,
+    "require_same_top_move": true,
+    "require_same_top_three_set": true
+  },
+  "serving": {
+    "progressive_budgets": [40, 200, 1000, 3000, 6000],
+    "max_simulations": 6000
+  }
+}

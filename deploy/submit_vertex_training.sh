@@ -37,6 +37,14 @@ Options:
   --sync-interval N        Checkpoint upload interval, >=30 seconds (default: 300).
   --resume-uri URI         Optional gs://.../checkpoints/latest.pt to resume from.
   --service-account EMAIL  Optional custom training service account.
+  --scheduling-strategy S regular, spot, or flex-start (default: regular).
+  --max-wait-seconds N    Flex Start capacity wait bound, 0..604800 (default: 86400).
+  --initial-model-uri URI  Optional generation-pinned gs:// model for a new run.
+  --initial-model-sha256 H Required digest guard when --initial-model-uri is used.
+  --run-tournament        After training, round-robin the initial and iteration models.
+  --tournament-games N    Even games per model pair (default: 8).
+  --tournament-sims N     MCTS simulations/move in the tournament (default: 128).
+  --tournament-batch N    Maximum batched positions (default: 32).
   --allow-dirty-source     Explicitly permit a dirty Git worktree (not recommended).
   --plan-only              Print the validated plan and make no changes.
   --skip-build             Do not run Cloud Build (requires --image-uri).
@@ -49,7 +57,9 @@ CPU is the cost-conscious default. Optional accelerator overrides:
   TORCH_INDEX_URL=https://download.pytorch.org/whl/<compatible-cuda-index>
 
 When an accelerator is requested, TORCH_INDEX_URL must be explicitly set to a
-CUDA-compatible official PyTorch wheel index. Availability and quota are regional.
+CUDA-compatible official PyTorch wheel index. A config whose
+training.self_play_backend is "batched" is rejected before Cloud Build unless an
+accelerator is configured. Availability and quota are regional.
 EOF
 }
 
@@ -85,6 +95,14 @@ SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-}"
 ACCELERATOR_TYPE="${ACCELERATOR_TYPE:-${VERTEX_ACCELERATOR_TYPE:-}}"
 ACCELERATOR_COUNT="${ACCELERATOR_COUNT:-${VERTEX_ACCELERATOR_COUNT:-}}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-}"
+SCHEDULING_STRATEGY="${SCHEDULING_STRATEGY:-regular}"
+MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-86400}"
+INITIAL_MODEL_URI="${INITIAL_MODEL_URI:-}"
+INITIAL_MODEL_SHA256="${INITIAL_MODEL_SHA256:-}"
+RUN_TOURNAMENT="${RUN_TOURNAMENT:-0}"
+TOURNAMENT_GAMES_PER_PAIR="${TOURNAMENT_GAMES_PER_PAIR:-8}"
+TOURNAMENT_SIMULATIONS="${TOURNAMENT_SIMULATIONS:-128}"
+TOURNAMENT_MAX_BATCH_SIZE="${TOURNAMENT_MAX_BATCH_SIZE:-32}"
 SKIP_BUILD=0
 CONFIRMED=0
 ALLOW_DIRTY_SOURCE=0
@@ -112,6 +130,14 @@ while (($#)); do
     --sync-interval) need_value "$@"; SYNC_INTERVAL_SECONDS="$2"; shift 2 ;;
     --resume-uri) need_value "$@"; RESUME_URI="$2"; shift 2 ;;
     --service-account) need_value "$@"; SERVICE_ACCOUNT="$2"; shift 2 ;;
+    --scheduling-strategy) need_value "$@"; SCHEDULING_STRATEGY="$2"; shift 2 ;;
+    --max-wait-seconds) need_value "$@"; MAX_WAIT_SECONDS="$2"; shift 2 ;;
+    --initial-model-uri) need_value "$@"; INITIAL_MODEL_URI="$2"; shift 2 ;;
+    --initial-model-sha256) need_value "$@"; INITIAL_MODEL_SHA256="$2"; shift 2 ;;
+    --run-tournament) RUN_TOURNAMENT=1; shift ;;
+    --tournament-games) need_value "$@"; TOURNAMENT_GAMES_PER_PAIR="$2"; shift 2 ;;
+    --tournament-sims) need_value "$@"; TOURNAMENT_SIMULATIONS="$2"; shift 2 ;;
+    --tournament-batch) need_value "$@"; TOURNAMENT_MAX_BATCH_SIZE="$2"; shift 2 ;;
     --allow-dirty-source) ALLOW_DIRTY_SOURCE=1; shift ;;
     --plan-only) PLAN_ONLY=1; shift ;;
     --skip-build) SKIP_BUILD=1; shift ;;
@@ -136,6 +162,18 @@ done
   die "resume URI must end with /checkpoints/latest.pt"
 [[ -z "$SERVICE_ACCOUNT" || "$SERVICE_ACCOUNT" =~ ^[a-z0-9][a-z0-9-]*@[a-z0-9.-]+\.iam\.gserviceaccount\.com$ ]] || die "invalid service account email"
 [[ -z "$MACHINE_TYPE" || "$MACHINE_TYPE" =~ ^[a-z0-9-]+$ ]] || die "invalid machine type"
+[[ "$SCHEDULING_STRATEGY" == "regular" || "$SCHEDULING_STRATEGY" == "spot" || "$SCHEDULING_STRATEGY" == "flex-start" ]] || die "scheduling strategy must be regular, spot, or flex-start"
+[[ "$MAX_WAIT_SECONDS" =~ ^[0-9]+$ ]] && ((MAX_WAIT_SECONDS <= 604800)) || die "max wait must be 0..604800 seconds"
+[[ -z "$INITIAL_MODEL_URI" || "$INITIAL_MODEL_URI" =~ ^gs://[^/]+/.+(#[1-9][0-9]*)?$ ]] || die "initial model URI must be gs://BUCKET/OBJECT[#GENERATION]"
+if [[ -n "$INITIAL_MODEL_URI" ]]; then
+  [[ "$INITIAL_MODEL_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "--initial-model-sha256 is required with a generation-pinned model"
+else
+  [[ -z "$INITIAL_MODEL_SHA256" ]] || die "--initial-model-sha256 requires --initial-model-uri"
+fi
+[[ "$RUN_TOURNAMENT" == "0" || "$RUN_TOURNAMENT" == "1" ]] || die "RUN_TOURNAMENT must be 0 or 1"
+[[ "$TOURNAMENT_GAMES_PER_PAIR" =~ ^[1-9][0-9]*$ ]] && ((TOURNAMENT_GAMES_PER_PAIR % 2 == 0)) || die "tournament games must be positive and even"
+[[ "$TOURNAMENT_SIMULATIONS" =~ ^[1-9][0-9]*$ ]] || die "tournament simulations must be positive"
+[[ "$TOURNAMENT_MAX_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] || die "tournament batch must be positive"
 
 if [[ -n "$ACCELERATOR_TYPE" ]]; then
   [[ "$ACCELERATOR_TYPE" =~ ^[A-Z][A-Z0-9_]+$ ]] || die "invalid accelerator type"
@@ -153,6 +191,9 @@ else
   TRAIN_DEVICE="cpu"
 fi
 [[ "$TORCH_INDEX_URL" =~ ^https:// ]] || die "TORCH_INDEX_URL must use https://"
+if [[ "$SCHEDULING_STRATEGY" != "regular" && -z "$ACCELERATOR_TYPE" ]]; then
+  die "spot/flex-start pilot requires an explicitly configured accelerator"
+fi
 
 RUN_ID="$(date -u +%Y%m%d-%H%M%S)"
 SOURCE_REVISION="${GIT_SHA:-}"
@@ -209,6 +250,23 @@ require_command python3
 CONFIG_ROOT="$(python3 -c 'from pathlib import Path; print(Path("configs").resolve())')"
 CONFIG_REAL="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$CONFIG_FILE")"
 [[ "$CONFIG_REAL" == "$CONFIG_ROOT"/* ]] || die "config symlink escapes the repository configs directory"
+CONFIG_SELF_PLAY_BACKEND="$(python3 - "$CONFIG_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    config = json.load(handle)
+print(config.get("training", {}).get("self_play_backend", "process"))
+PY
+)"
+[[ "$CONFIG_SELF_PLAY_BACKEND" == "process" || "$CONFIG_SELF_PLAY_BACKEND" == "batched" ]] || \
+  die "training.self_play_backend must be process or batched"
+if [[ "$CONFIG_SELF_PLAY_BACKEND" == "batched" && -z "$ACCELERATOR_TYPE" ]]; then
+  die "batched self-play requires an accelerator; set ACCELERATOR_TYPE, ACCELERATOR_COUNT, and a CUDA TORCH_INDEX_URL"
+fi
+if [[ "$CONFIG_SELF_PLAY_BACKEND" == "process" && -n "$ACCELERATOR_TYPE" ]]; then
+  printf 'warning: process self-play remains CPU/batch-one; the accelerator mainly helps optimizer and promotion work\n' >&2
+fi
 CONFIG_NAME="$(basename "$CONFIG_FILE" .json)"
 CONTAINER_CONFIG="/app/${CONFIG_FILE}"
 if [[ "$CONFIG_NAME" != "production" && "$JOB" == "$DEFAULT_JOB" ]]; then
@@ -227,6 +285,7 @@ printf '  job display name:    %s\n' "$JOB"
 printf '  source revision:     %s (%s)\n' "$SOURCE_REVISION" "$SOURCE_STATE"
 printf '  image:               %s\n' "$IMAGE_URI"
 printf '  config:              %s\n' "$CONTAINER_CONFIG"
+printf '  self-play backend:   %s\n' "$CONFIG_SELF_PLAY_BACKEND"
 printf '  worker:              1 x %s\n' "$MACHINE_TYPE"
 REQUESTED_VCPUS="${MACHINE_TYPE##*-}"
 if [[ "$REQUESTED_VCPUS" =~ ^[0-9]+$ ]]; then
@@ -240,11 +299,23 @@ else
   printf '  accelerator:         none (CPU-optimized image)\n'
 fi
 printf '  hard runtime bound:  %s hours (%s machine-hours maximum)\n' "$MAX_RUN_HOURS" "$MAX_RUN_HOURS"
+printf '  scheduling:          %s\n' "$SCHEDULING_STRATEGY"
+if [[ "$SCHEDULING_STRATEGY" == "flex-start" ]]; then
+  printf '  capacity wait bound: %s seconds (waiting is outside runtime)\n' "$MAX_WAIT_SECONDS"
+fi
 if [[ -n "$ACCELERATOR_TYPE" ]]; then
   printf '  accelerator bound:   %s accelerator-hours maximum\n' "$((MAX_RUN_HOURS * ACCELERATOR_COUNT))"
 fi
 printf '  output/checkpoints:  %s\n' "$OUTPUT_URI"
 printf '  checkpoint sync:     every %s seconds and on exit\n' "$SYNC_INTERVAL_SECONDS"
+if [[ -n "$INITIAL_MODEL_URI" ]]; then
+  printf '  initial model:       %s\n' "$INITIAL_MODEL_URI"
+  printf '  initial SHA-256:     %s\n' "$INITIAL_MODEL_SHA256"
+fi
+if [[ "$RUN_TOURNAMENT" == "1" ]]; then
+  printf '  tournament:          %s games/pair, %s sims/move, max batch %s\n' \
+    "$TOURNAMENT_GAMES_PER_PAIR" "$TOURNAMENT_SIMULATIONS" "$TOURNAMENT_MAX_BATCH_SIZE"
+fi
 if [[ -n "$RESUME_URI" ]]; then
   printf '  explicit resume:     %s\n' "$RESUME_URI"
 else
@@ -363,7 +434,10 @@ trap 'rm -f "$SPEC_FILE"' EXIT
 python3 - "$SPEC_FILE" "$MACHINE_TYPE" "$BOOT_DISK_SIZE_GB" "$PINNED_IMAGE_URI" \
   "$OUTPUT_URI" "$MAX_RUN_SECONDS" "$TRAIN_DEVICE" "$SYNC_INTERVAL_SECONDS" \
   "$RESUME_URI" "$SERVICE_ACCOUNT" "$ACCELERATOR_TYPE" "$ACCELERATOR_COUNT" "$RUN_ID" \
-  "$SOURCE_REVISION" "$CONTAINER_CONFIG" <<'PY'
+  "$SOURCE_REVISION" "$CONTAINER_CONFIG" "$SCHEDULING_STRATEGY" "$MAX_WAIT_SECONDS" \
+  "$INITIAL_MODEL_URI" "$INITIAL_MODEL_SHA256" "$RUN_TOURNAMENT" \
+  "$TOURNAMENT_GAMES_PER_PAIR" "$TOURNAMENT_SIMULATIONS" \
+  "$TOURNAMENT_MAX_BATCH_SIZE" <<'PY'
 import json
 import sys
 
@@ -383,6 +457,14 @@ import sys
     run_id,
     source_revision,
     container_config,
+    scheduling_strategy,
+    max_wait_seconds,
+    initial_model_uri,
+    initial_model_sha256,
+    run_tournament,
+    tournament_games,
+    tournament_simulations,
+    tournament_batch,
 ) = sys.argv[1:]
 
 machine_spec = {"machineType": machine_type}
@@ -400,9 +482,32 @@ environment = [
     {"name": "GOMOKU_RUN_ID", "value": run_id},
     {"name": "ALLOW_SLOW_PRODUCTION", "value": "1"},
     {"name": "GIT_SHA", "value": source_revision},
+    {"name": "RUN_TOURNAMENT", "value": run_tournament},
+    {"name": "TOURNAMENT_GAMES_PER_PAIR", "value": tournament_games},
+    {"name": "TOURNAMENT_SIMULATIONS", "value": tournament_simulations},
+    {"name": "TOURNAMENT_MAX_BATCH_SIZE", "value": tournament_batch},
 ]
 if resume_uri:
     environment.append({"name": "RESUME_CHECKPOINT_URI", "value": resume_uri})
+if initial_model_uri:
+    environment.extend(
+        [
+            {"name": "INITIAL_MODEL_URI", "value": initial_model_uri},
+            {"name": "INITIAL_MODEL_SHA256", "value": initial_model_sha256},
+        ]
+    )
+
+scheduling = {
+    "timeout": f"{timeout_seconds}s",
+    "restartJobOnWorkerRestart": True,
+}
+if scheduling_strategy == "spot":
+    scheduling["strategy"] = "SPOT"
+elif scheduling_strategy == "flex-start":
+    scheduling.update(
+        strategy="FLEX_START",
+        maxWaitDuration=f"{max_wait_seconds}s",
+    )
 
 spec = {
     "workerPoolSpecs": [
@@ -421,10 +526,7 @@ spec = {
         }
     ],
     "baseOutputDirectory": {"outputUriPrefix": output_uri},
-    "scheduling": {
-        "timeout": f"{timeout_seconds}s",
-        "restartJobOnWorkerRestart": True,
-    },
+    "scheduling": scheduling,
 }
 if service_account:
     spec["serviceAccount"] = service_account

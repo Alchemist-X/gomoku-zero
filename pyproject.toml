@@ -34,6 +34,7 @@ gomoku-api = "gomoku_zero.api:main"
 gomoku-convergence = "gomoku_zero.convergence:main"
 gomoku-train = "gomoku_zero.training:main"
 gomoku-evaluate = "gomoku_zero.evaluation:main"
+gomoku-tournament = "gomoku_zero.tournament:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gomoku_zero"]

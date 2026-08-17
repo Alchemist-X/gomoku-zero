@@ -46,6 +46,9 @@ class TrainingConfig:
     iterations: int = 100
     self_play_games_per_iteration: int = 200
     self_play_actors: int = 1
+    self_play_backend: str = "process"
+    self_play_lanes: int = 32
+    inference_batch_size: int = 32
     mcts_simulations: int = 800
     c_puct: float = 1.5
     dirichlet_alpha: float = 0.15
@@ -72,6 +75,8 @@ class TrainingConfig:
             "iterations",
             "self_play_games_per_iteration",
             "self_play_actors",
+            "self_play_lanes",
+            "inference_batch_size",
             "mcts_simulations",
             "training_steps_per_iteration",
             "batch_size",
@@ -98,6 +103,8 @@ class TrainingConfig:
             raise ValueError("learning-rate milestones must fall strictly inside the run")
         if self.symmetry_augmentation not in {"none", "random", "all"}:
             raise ValueError("training.symmetry_augmentation must be none, random, or all")
+        if self.self_play_backend not in {"process", "batched"}:
+            raise ValueError("training.self_play_backend must be process or batched")
 
     @property
     def total_self_play_games(self) -> int:

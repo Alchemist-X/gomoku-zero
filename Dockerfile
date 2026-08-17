@@ -12,7 +12,7 @@ RUN python -m venv "${VIRTUAL_ENV}"
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 RUN python -m pip install --upgrade pip setuptools wheel \
-    && python -m pip install --index-url "${TORCH_INDEX_URL}" "torch>=2.6,<3"
+    && python -m pip install --index-url "${TORCH_INDEX_URL}" "torch==2.13.0"
 
 WORKDIR /build
 COPY pyproject.toml README.md LICENSE ./
@@ -22,9 +22,12 @@ RUN python -m pip install '.[cloud]'
 
 FROM python:3.11-slim-bookworm AS runtime
 
-ENV PATH="/opt/venv/bin:${PATH}" \
+ENV PATH="/opt/venv/bin:/usr/local/nvidia/bin:${PATH}" \
+    LD_LIBRARY_PATH="/usr/local/nvidia/lib:/usr/local/nvidia/lib64" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     PORT=8080 \
     WEB_CONCURRENCY=1 \
     GOMOKU_CONFIG=/app/configs/production.json \
