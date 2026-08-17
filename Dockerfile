@@ -25,6 +25,8 @@ FROM python:3.11-slim-bookworm AS runtime
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     PORT=8080 \
     WEB_CONCURRENCY=1 \
     GOMOKU_CONFIG=/app/configs/production.json \

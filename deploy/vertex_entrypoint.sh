@@ -43,6 +43,23 @@ for value in "$TOURNAMENT_GAMES_PER_PAIR" "$TOURNAMENT_SIMULATIONS" \
   "$TOURNAMENT_BOOTSTRAP_SAMPLES"; do
   [[ "$value" =~ ^[0-9]+$ ]] || die "tournament settings must be non-negative integers"
 done
+
+python - <<'PY'
+import json
+
+import torch
+
+diagnostics = {
+    "torch_version": torch.__version__,
+    "torch_cuda_version": torch.version.cuda,
+    "cuda_available": torch.cuda.is_available(),
+    "cuda_device_count": torch.cuda.device_count(),
+}
+if diagnostics["cuda_available"]:
+    diagnostics["cuda_device_name"] = torch.cuda.get_device_name(0)
+    diagnostics["cuda_device_memory_bytes"] = torch.cuda.get_device_properties(0).total_memory
+print("Runtime diagnostics: " + json.dumps(diagnostics, sort_keys=True), flush=True)
+PY
 ((TOURNAMENT_GAMES_PER_PAIR > 0 && TOURNAMENT_GAMES_PER_PAIR % 2 == 0)) || die "TOURNAMENT_GAMES_PER_PAIR must be positive and even"
 ((TOURNAMENT_SIMULATIONS > 0 && TOURNAMENT_MAX_BATCH_SIZE > 0)) || die "tournament simulations and batch size must be positive"
 
